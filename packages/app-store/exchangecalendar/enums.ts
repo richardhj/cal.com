@@ -1,6 +1,7 @@
 export enum ExchangeAuthentication {
   STANDARD = 0,
   NTLM = 1,
+  MODERN = 2,
 }
 export enum ExchangeVersion {
   Exchange2007_SP1 = 0,

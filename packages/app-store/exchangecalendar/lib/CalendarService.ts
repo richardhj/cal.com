@@ -24,6 +24,7 @@ import {
   Uri,
   WebCredentials,
   WellKnownFolderName,
+  OAuthCredentials
 } from "ews-javascript-api";
 
 import { symmetricDecrypt } from "@calcom/lib/crypto";
@@ -197,9 +198,30 @@ export default class ExchangeCalendarService implements Calendar {
   }
 
   private async getExchangeService(): Promise<ExchangeService> {
+    const forcePasswordless = (() => {
+      const v = String(process.env.EXCHANGE_FORCE_PASSWORDLESS).toLowerCase();
+      return v === "1" || v === "true";
+    })();
+
     const service: ExchangeService = new ExchangeService(this.payload.exchangeVersion);
-    service.Credentials = new WebCredentials(this.payload.username, this.payload.password);
     service.Url = new Uri(this.payload.url);
+
+    // OAuth
+    if (this.payload.authenticationMethod === ExchangeAuthentication.MODERN) {
+      const accessToken: string | undefined = this.payload?.token?.access_token;
+      if (!accessToken) {
+        throw new Error("Exchange OAuth: missing access token");
+      }
+      service.Credentials = new OAuthCredentials(accessToken);
+      return service;
+    }
+
+    if (forcePasswordless) {
+      throw new Error("Password-based Exchange authentication is disabled by EXCHANGE_FORCE_PASSWORDLESS");
+    }
+
+    // Basic/NTLM
+    service.Credentials = new WebCredentials(this.payload.username, this.payload.password);
     if (this.payload.authenticationMethod === ExchangeAuthentication.NTLM) {
       const { XhrApi } = await import("@ewsjs/xhr");
       const xhr = new XhrApi({

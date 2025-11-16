@@ -12,6 +12,11 @@ import checkSession from "../../_utils/auth";
 import { ExchangeAuthentication, ExchangeVersion } from "../enums";
 import { CalendarService } from "../lib";
 
+function isForcePasswordless() {
+  const v = String(process.env.EXCHANGE_FORCE_PASSWORDLESS).toLowerCase();
+  return v === "1" || v === "true";
+}
+
 const formSchema = z
   .object({
     url: z.string().url(),
@@ -24,6 +29,9 @@ const formSchema = z
   .strict();
 
 export async function getHandler(req: NextApiRequest, res: NextApiResponse) {
+  if (isForcePasswordless()) {
+    return res.status(403).json({ message: "Password-based authentication is disabled. Use OAuth." });
+  }
   const session = checkSession(req);
   const body = formSchema.parse(req.body);
   const encrypted = symmetricEncrypt(JSON.stringify(body), process.env.CALENDSO_ENCRYPTION_KEY || "");

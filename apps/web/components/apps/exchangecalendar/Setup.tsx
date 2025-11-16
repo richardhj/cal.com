@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { Toaster } from "sonner";
 import z from "zod";
@@ -18,21 +18,21 @@ import { SelectField } from "@calcom/ui/components/form";
 
 interface IFormData {
   url: string;
-  username: string;
-  password: string;
+  username?: string;
+  password?: string;
   authenticationMethod: ExchangeAuthentication;
-  exchangeVersion: ExchangeVersion;
-  useCompression: boolean;
+  exchangeVersion?: ExchangeVersion;
+  useCompression?: boolean;
 }
 
 const schema = z
   .object({
     url: z.string().url(),
-    username: emailSchema,
-    password: z.string(),
+    username: emailSchema.optional(),
+    password: z.string().optional(),
     authenticationMethod: z.number().default(ExchangeAuthentication.STANDARD),
-    exchangeVersion: z.number().default(ExchangeVersion.Exchange2016),
-    useCompression: z.boolean().default(false),
+    exchangeVersion: z.number().optional().default(ExchangeVersion.Exchange2016),
+    useCompression: z.boolean().optional().default(false),
   })
   .strict();
 
@@ -40,6 +40,25 @@ export default function ExchangeSetup() {
   const { t } = useLocale();
   const router = useRouter();
   const [errorMessage, setErrorMessage] = useState("");
+  const [oauthEnabled, setOauthEnabled] = useState(false);
+  const [forcePasswordless, setForcePasswordless] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+        const res = await fetch("/api/integrations/exchangecalendar/oauth_config");
+        const json = await res.json();
+        if (!cancelled && res.ok) {
+          setOauthEnabled(Boolean(json?.enabled));
+          setForcePasswordless(Boolean(json?.forcePasswordless));
+        }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const form = useForm<IFormData>({
     defaultValues: {
       authenticationMethod: ExchangeAuthentication.NTLM,
@@ -48,10 +67,15 @@ export default function ExchangeSetup() {
     resolver: zodResolver(schema),
   });
   const authenticationMethod = form.watch("authenticationMethod");
-  const authenticationMethods = [
-    { value: ExchangeAuthentication.STANDARD, label: t("exchange_authentication_standard") },
-    { value: ExchangeAuthentication.NTLM, label: t("exchange_authentication_ntlm") },
-  ];
+  const authenticationMethods = forcePasswordless
+    ? oauthEnabled
+      ? [{ value: ExchangeAuthentication.MODERN, label: "Modern (OAuth)" }]
+      : []
+    : [
+        { value: ExchangeAuthentication.STANDARD, label: t("exchange_authentication_standard") },
+        { value: ExchangeAuthentication.NTLM, label: t("exchange_authentication_ntlm") },
+        ...(oauthEnabled ? [{ value: ExchangeAuthentication.MODERN, label: "Modern (OAuth)" }] : []),
+      ];
   const exchangeVersions = [
     { value: ExchangeVersion.Exchange2007_SP1, label: t("exchange_version_2007_SP1") },
     { value: ExchangeVersion.Exchange2010, label: t("exchange_version_2010") },
@@ -62,6 +86,20 @@ export default function ExchangeSetup() {
     { value: ExchangeVersion.Exchange2015, label: t("exchange_version_2015") },
     { value: ExchangeVersion.Exchange2016, label: t("exchange_version_2016") },
   ];
+
+  // Ensure we don't keep OAuth selected if it's disabled
+  useEffect(() => {
+    if (!oauthEnabled && authenticationMethod === ExchangeAuthentication.MODERN) {
+      form.setValue("authenticationMethod", ExchangeAuthentication.NTLM);
+    }
+  }, [oauthEnabled, authenticationMethod, form]);
+
+  // If passwordless is forced, set OAuth automatically when available
+  useEffect(() => {
+    if (forcePasswordless && oauthEnabled && authenticationMethod !== ExchangeAuthentication.MODERN) {
+      form.setValue("authenticationMethod", ExchangeAuthentication.MODERN);
+    }
+  }, [forcePasswordless, oauthEnabled, authenticationMethod, form]);
 
   return (
     <>
@@ -84,6 +122,25 @@ export default function ExchangeSetup() {
                   form={form}
                   handleSubmit={async (values) => {
                     setErrorMessage("");
+                    if (forcePasswordless && values.authenticationMethod !== ExchangeAuthentication.MODERN) {
+                      setErrorMessage(t("something_went_wrong"));
+                      return;
+                    }
+                    if (values.authenticationMethod === ExchangeAuthentication.MODERN) {
+                      const params = new URLSearchParams();
+                      params.set("url", values.url);
+                      const res = await fetch(`/api/integrations/exchangecalendar/oauth_add?${params.toString()}`);
+                      const json = await res.json();
+                      if (!res.ok) {
+                        setErrorMessage(json?.message || t("something_went_wrong"));
+                      } else if (json?.url) {
+                        router.push(json.url);
+                      } else {
+                        setErrorMessage(t("something_went_wrong"));
+                      }
+                      return;
+                    }
+
                     const res = await fetch("/api/integrations/exchangecalendar/add", {
                       method: "POST",
                       body: JSON.stringify(values),
@@ -98,7 +155,14 @@ export default function ExchangeSetup() {
                       router.push(json.url);
                     }
                   }}>
-                  <fieldset className="space-y-4" disabled={form.formState.isSubmitting}>
+                  <fieldset className="space-y-4" disabled={form.formState.isSubmitting || (forcePasswordless && !oauthEnabled)}>
+                    {forcePasswordless && !oauthEnabled && (
+                      <Alert
+                        severity="warning"
+                        title={"Exchange OAuth is not configured. Please set EXCHANGE_OAUTH_AUTHORITY, EXCHANGE_OAUTH_CLIENT_ID and EXCHANGE_OAUTH_CLIENT_SECRET."}
+                        className="my-2"
+                      />
+                    )}
                     <TextField
                       required
                       type="url"
@@ -107,41 +171,46 @@ export default function ExchangeSetup() {
                       placeholder="https://example.com/Ews/Exchange.asmx"
                       inputMode="url"
                     />
-                    <EmailField
-                      required
-                      {...form.register("username")}
-                      label={t("email_address")}
-                      placeholder="john.doe@example.com"
-                    />
-                    <PasswordField
-                      required
-                      {...form.register("password")}
-                      label={t("password")}
-                      autoComplete="password"
-                    />
-                    <Controller
-                      name="authenticationMethod"
-                      control={form.control}
-                      render={({ field: { onChange } }) => {
-                        const ntlmAuthenticationMethod = authenticationMethods.find(
-                          (method) => method.value === ExchangeAuthentication.NTLM
-                        );
-                        return (
-                          <SelectField
-                            label={t("exchange_authentication")}
-                            options={authenticationMethods}
-                            defaultValue={ntlmAuthenticationMethod}
-                            onChange={(authentication) => {
-                              if (authentication) {
-                                onChange(authentication.value);
-                                form.setValue("authenticationMethod", authentication.value);
-                              }
-                            }}
-                          />
-                        );
-                      }}
-                    />
-                    {authenticationMethod === ExchangeAuthentication.STANDARD ? (
+                    {authenticationMethod !== ExchangeAuthentication.MODERN && !forcePasswordless && (
+                      <>
+                        <EmailField
+                          required
+                          {...form.register("username")}
+                          label={t("email_address")}
+                          placeholder="john.doe@example.com"
+                        />
+                        <PasswordField
+                          required
+                          {...form.register("password")}
+                          label={t("password")}
+                          autoComplete="password"
+                        />
+                      </>
+                    )}
+                    {authenticationMethods.length > 0 && (
+                      <Controller
+                        name="authenticationMethod"
+                        control={form.control}
+                        render={({ field: { onChange } }) => {
+                          const current = authenticationMethods.find((m) => m.value === authenticationMethod);
+                          const defaultOption = current ?? authenticationMethods[0];
+                          return (
+                            <SelectField
+                              label={t("exchange_authentication")}
+                              options={authenticationMethods}
+                              defaultValue={defaultOption}
+                              onChange={(authentication) => {
+                                if (authentication) {
+                                  onChange(authentication.value);
+                                  form.setValue("authenticationMethod", authentication.value);
+                                }
+                              }}
+                            />
+                          );
+                        }}
+                      />
+                    )}
+                    {authenticationMethod === ExchangeAuthentication.STANDARD && !forcePasswordless ? (
                       <Controller
                         name="exchangeVersion"
                         control={form.control}
@@ -171,7 +240,7 @@ export default function ExchangeSetup() {
                     <Button type="button" color="secondary" onClick={() => router.back()}>
                       {t("cancel")}
                     </Button>
-                    <Button type="submit" loading={form.formState.isSubmitting}>
+                    <Button type="submit" loading={form.formState.isSubmitting} disabled={forcePasswordless && !oauthEnabled}>
                       {t("save")}
                     </Button>
                   </div>
