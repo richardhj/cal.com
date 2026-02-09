@@ -56,7 +56,7 @@ const isFixedHost = <T extends { isFixed: boolean }>(host: T): host is T & { isF
   return host.isFixed;
 };
 
-const resolveDynamicFixedHostIds = <T extends { user: { id: number; username?: string | null } }>(
+const resolveDynamicFixedHostIds = <T extends { id: number; username?: string | null }>(
   hosts: Host<T>[],
   dynamicFixedHostUsernames: string[] | undefined,
   isEnabled: boolean
@@ -108,6 +108,7 @@ export class QualifiedHostsService {
     T extends {
       email: string;
       id: number;
+      username?: string | null;
       uuid: string;
       credentials: CredentialPayload[];
       userLevelSelectedCalendars: SelectedCalendar[];
