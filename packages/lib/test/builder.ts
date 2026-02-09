@@ -168,6 +168,7 @@ export const buildEventType = (eventType?: Partial<EventType>): EventType => {
     createdAt: null,
     updatedAt: null,
     rrHostSubsetEnabled: false,
+    dynamicFixedHostsEnabled: false,
     enablePerHostLocations: false,
     ...eventType,
   };
